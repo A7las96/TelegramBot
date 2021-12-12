@@ -1,5 +1,9 @@
+import logging
 import sqlite3 as sq
 
+import imagehash
+
+logging.basicConfig(level=logging.INFO)
 
 def ensure_connection(func):
     def inner(*args, **kwargs):
@@ -15,14 +19,13 @@ def init_db(conn, force: bool = False):
     cur = conn.cursor()
     print('База данных успешно подключена')
     if force:
-        cur.execute('DROP TABLE IF EXISTS photo.db')
+        cur.execute('DROP TABLE IF EXISTS photo')
 
     cur.execute('''
      CREATE TABLE IF NOT EXISTS photo(
-         id INTEGER PRIMARY KEY,
-         file_id TEXT,
-         pHash TEXT,
-         dHash TEXT)
+         file_id TEXT ,
+         dHash TEXT PRIMARY KEY,
+         pHash TEXT)
         '''
                 )
     # сохраннение изменений
@@ -30,15 +33,42 @@ def init_db(conn, force: bool = False):
 
 
 @ensure_connection
-async def sql_add_command(state, conn, data):
-    async with state.proxy() as data:
-        cur = conn.cursor()
-        cur.execute('INSERT INTO photo VALUES (?, ?, ?)', tuple(data.values()))
-        conn.commit()
-
-
-@ensure_connection
 async def duplicate_check(state, conn):
-    cur = conn.cursor()
-    photos_p_Hash = cur.execute('SELECT pHash FROM photo.db').fetchall()
-    return photos_p_Hash
+    async with state.proxy() as data:
+
+        cur = conn.cursor()
+
+        duplicate_D = False
+        duplicate_P = False
+        main_duplicate = False
+        similar_photos = []
+        result = []
+        number = 0
+
+        photos_Hash = cur.execute('SELECT dHash, pHash FROM photo').fetchall()
+
+        for i in range(len(photos_Hash)):
+            image_dHash = imagehash.hex_to_hash(photos_Hash[i][0])
+            image_pHash = imagehash.hex_to_hash(photos_Hash[i][1])
+            if imagehash.hex_to_hash(data['d_hash'])-image_dHash < 5:
+                duplicate_D = True
+                if imagehash.hex_to_hash(data['p_hash'])-image_pHash < 8:
+                    duplicate_P = True
+                    logging.info('Данное фото уже было')
+            elif imagehash.hex_to_hash(data['d_hash'])-image_dHash < 10:
+                if imagehash.hex_to_hash(data['p_hash'])-image_pHash < 15:
+                    if number < 4:
+                        warning = cur.execute('SELECT file_id FROM photo WHERE dHash = ?', (str(image_dHash),)).fetchone()
+                        similar_photos.append(warning)
+                        ++number
+                        logging.warning('Значительное сходство с некторыми раннее добавленными фото')
+
+        if not (duplicate_D and duplicate_P):
+            cur.execute('INSERT INTO photo VALUES (?, ?, ?)', (data['photo'], data['d_hash'], data['p_hash']))
+            conn.commit()
+            logging.info("Фото было добавлено в базу данных")
+
+        main_duplicate = duplicate_D and duplicate_P
+        result.append(main_duplicate)
+        result.append(similar_photos)
+        return result
